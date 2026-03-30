@@ -1,0 +1,18 @@
+# Local development overrides: hot-reload mounts
+services:
+  backend:
+    build:
+      target: development
+    volumes:
+      - ./backend/app:/app/app
+      - media_data:/media
+    environment:
+      RELOAD: "true"
+
+  frontend:
+    build:
+      target: development
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: npm run dev
