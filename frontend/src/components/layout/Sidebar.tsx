@@ -2,12 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Leaf, Search, Home } from 'lucide-react'
+import { Leaf, Search, Home, Bot } from 'lucide-react'
 import { clsx } from 'clsx'
 
 const NAV = [
   { href: '/observations', label: 'Observations', icon: Home },
   { href: '/search', label: 'Search', icon: Search },
+  { href: '/robot', label: 'Send Observer', icon: Bot },
 ]
 
 export function Sidebar() {

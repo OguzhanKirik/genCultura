@@ -2,14 +2,15 @@
 
 import { useParams, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
-import { ArrowLeft, Thermometer, Droplets, Wind, Sun, Loader2, Sparkles, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Thermometer, Droplets, Wind, Sun, Loader2, Sparkles, RefreshCw, Bot } from 'lucide-react'
 import Link from 'next/link'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useObservation, useDeleteObservation } from '@/lib/hooks/useObservations'
 import { SimilarObservations } from '@/components/observations/SimilarObservations'
 import { CategoryBadge } from '@/components/observations/ObservationCard'
 import { mediaUrl } from '@/lib/api/media'
 import { enrichObservation } from '@/lib/api/observations'
+import { startRobotMission, getRobotMission, RobotMission } from '@/lib/api/robot'
 import { useQueryClient } from '@tanstack/react-query'
 
 export default function ObservationDetailPage() {
@@ -20,6 +21,48 @@ export default function ObservationDetailPage() {
   const { mutate: deleteObs, isPending: deleting } = useDeleteObservation()
   const [enriching, setEnriching] = useState(false)
   const [enrichError, setEnrichError] = useState<string | null>(null)
+
+  // Robot mission state
+  const [robotMission, setRobotMission] = useState<RobotMission | null>(null)
+  const [robotError, setRobotError] = useState<string | null>(null)
+  const [selectedZone, setSelectedZone] = useState<string>('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Poll mission status every 3 s while active
+  useEffect(() => {
+    if (!robotMission) return
+    if (robotMission.status === 'done' || robotMission.status === 'failed') {
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (robotMission.status === 'done') {
+        queryClient.invalidateQueries({ queryKey: ['observations', id] })
+      }
+      return
+    }
+    pollRef.current = setInterval(async () => {
+      try {
+        const updated = await getRobotMission(robotMission.id)
+        setRobotMission(updated)
+      } catch {
+        // ignore transient errors
+      }
+    }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [robotMission?.id, robotMission?.status])
+
+  async function handleSendRobot() {
+    const zone = selectedZone || obs?.zone_id || ''
+    if (!zone) return
+    setRobotError(null)
+    setRobotMission(null)
+    try {
+      const { mission_id } = await startRobotMission(id, zone)
+      const mission = await getRobotMission(mission_id)
+      setRobotMission(mission)
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || 'Could not reach robot bridge'
+      setRobotError(msg)
+    }
+  }
 
   async function handleEnrich() {
     setEnriching(true)
@@ -129,6 +172,55 @@ export default function ObservationDetailPage() {
               <p className="text-xs text-gray-400 italic">
                 {enriching ? 'Running analysis…' : 'No analysis yet — tap Analyse to run the VLM.'}
               </p>
+            )}
+          </div>
+
+          {/* Robot mission */}
+          <div className="mt-4 pt-4 border-t border-gray-50">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-gray-600 mb-2">
+              <Bot size={13} />
+              Robot Capture
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder={obs.zone_id ? `Zone: ${obs.zone_id}` : 'Zone (e.g. Bay 1A)'}
+                value={selectedZone}
+                onChange={(e) => setSelectedZone(e.target.value)}
+                className="flex-1 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-gray-400 placeholder:text-gray-400"
+              />
+              <button
+                onClick={handleSendRobot}
+                disabled={
+                  (!selectedZone && !obs.zone_id) ||
+                  (!!robotMission && robotMission.status !== 'done' && robotMission.status !== 'failed')
+                }
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 transition-colors shrink-0"
+              >
+                <Bot size={11} />
+                {robotMission && robotMission.status !== 'done' && robotMission.status !== 'failed'
+                  ? 'Running…'
+                  : 'Send Robot'}
+              </button>
+            </div>
+            {robotError && (
+              <p className="text-xs text-red-500 mt-1">{robotError}</p>
+            )}
+            {robotMission && (
+              <div className={`mt-2 text-xs px-3 py-2 rounded-lg flex items-center gap-2 ${
+                robotMission.status === 'done'   ? 'bg-green-50 text-green-700 border border-green-100' :
+                robotMission.status === 'failed' ? 'bg-red-50 text-red-700 border border-red-100' :
+                'bg-blue-50 text-blue-700 border border-blue-100'
+              }`}>
+                {robotMission.status !== 'done' && robotMission.status !== 'failed' && (
+                  <Loader2 size={11} className="animate-spin shrink-0" />
+                )}
+                <span className="capitalize font-medium mr-1">{robotMission.status.replace('_', ' ')}</span>
+                {robotMission.message}
+                {robotMission.status === 'done' && robotMission.image_count > 0 && (
+                  <span className="ml-auto font-medium">{robotMission.image_count} photo{robotMission.image_count > 1 ? 's' : ''} added</span>
+                )}
+              </div>
             )}
           </div>
 

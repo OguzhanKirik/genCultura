@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Media
     media_dir: str = "./media"
 
+    # Robot bridge
+    robot_bridge_url: str = ""  # e.g. http://192.168.1.10:8001
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 
