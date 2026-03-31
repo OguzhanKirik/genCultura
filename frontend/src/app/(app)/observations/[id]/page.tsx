@@ -2,18 +2,38 @@
 
 import { useParams, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
-import { ArrowLeft, Thermometer, Droplets, Wind, Sun, Loader2 } from 'lucide-react'
+import { ArrowLeft, Thermometer, Droplets, Wind, Sun, Loader2, Sparkles, RefreshCw } from 'lucide-react'
 import Link from 'next/link'
+import { useState } from 'react'
 import { useObservation, useDeleteObservation } from '@/lib/hooks/useObservations'
 import { SimilarObservations } from '@/components/observations/SimilarObservations'
 import { CategoryBadge } from '@/components/observations/ObservationCard'
 import { mediaUrl } from '@/lib/api/media'
+import { enrichObservation } from '@/lib/api/observations'
+import { useQueryClient } from '@tanstack/react-query'
 
 export default function ObservationDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
+  const queryClient = useQueryClient()
   const { data: obs, isLoading } = useObservation(id)
   const { mutate: deleteObs, isPending: deleting } = useDeleteObservation()
+  const [enriching, setEnriching] = useState(false)
+  const [enrichError, setEnrichError] = useState<string | null>(null)
+
+  async function handleEnrich() {
+    setEnriching(true)
+    setEnrichError(null)
+    try {
+      await enrichObservation(id)
+      queryClient.invalidateQueries({ queryKey: ['observations', id] })
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || 'Analysis failed — is the Colab notebook still running?'
+      setEnrichError(msg)
+    } finally {
+      setEnriching(false)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -82,6 +102,36 @@ export default function ObservationDetailPage() {
 
           <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">{obs.body}</p>
 
+          {/* AI Analysis */}
+          <div className="mt-4 pt-4 border-t border-gray-50">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-brand-700">
+                <Sparkles size={13} />
+                AI Analysis
+              </div>
+              <button
+                onClick={handleEnrich}
+                disabled={enriching}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 disabled:opacity-50 transition-colors"
+              >
+                <RefreshCw size={11} className={enriching ? 'animate-spin' : ''} />
+                {enriching ? 'Analysing…' : obs.body_enriched ? 'Re-analyse' : 'Analyse'}
+              </button>
+            </div>
+            {enrichError && (
+              <p className="text-xs text-red-500 mb-2">{enrichError}</p>
+            )}
+            {obs.body_enriched ? (
+              <div className="bg-brand-50 border border-brand-100 rounded-lg p-4 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                {obs.body_enriched}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400 italic">
+                {enriching ? 'Running analysis…' : 'No analysis yet — tap Analyse to run the VLM.'}
+              </p>
+            )}
+          </div>
+
           {/* Environmental snapshot */}
           {(obs.temp_c || obs.humidity_pct || obs.co2_ppm || obs.light_klux) && (
             <div className="mt-4 pt-4 border-t border-gray-50 flex flex-wrap gap-4">
@@ -111,33 +161,53 @@ export default function ObservationDetailPage() {
           {/* Media */}
           {obs.media_attachments.length > 0 && (
             <div className="mt-4 pt-4 border-t border-gray-50">
-              <p className="text-xs font-medium text-gray-500 mb-2">Attachments</p>
-              <div className="flex flex-wrap gap-2">
-                {obs.media_attachments.map((m) => (
-                  <div key={m.id}>
-                    {m.media_type === 'image' ? (
-                      <img
-                        src={mediaUrl(m.storage_path)}
-                        alt={m.original_name || 'attachment'}
-                        className="h-24 w-24 object-cover rounded-lg border border-gray-100"
-                      />
-                    ) : m.media_type === 'video' ? (
-                      <video
-                        src={mediaUrl(m.storage_path)}
-                        controls
-                        className="h-24 rounded-lg border border-gray-100"
-                      />
-                    ) : m.media_type === 'audio' ? (
-                      <div className="p-3 bg-gray-50 rounded-lg">
-                        <audio controls src={mediaUrl(m.storage_path)} className="h-8" />
-                        {m.transcription && (
-                          <p className="text-xs text-gray-500 mt-1 max-w-xs">{m.transcription}</p>
+              <p className="text-xs font-medium text-gray-500 mb-3">Attachments</p>
+
+              {/* Images grid */}
+              {(() => {
+                const images = obs.media_attachments.filter(m => m.media_type === 'image')
+                const others = obs.media_attachments.filter(m => m.media_type !== 'image')
+                return (
+                  <>
+                    {images.length > 0 && (
+                      <div className={`grid gap-2 mb-3 ${
+                        images.length === 1 ? 'grid-cols-1' :
+                        images.length === 2 ? 'grid-cols-2' :
+                        'grid-cols-2'
+                      }`}>
+                        {images.map((m, i) => (
+                          <a key={m.id} href={mediaUrl(m.storage_path)} target="_blank" rel="noreferrer"
+                            className={images.length === 3 && i === 0 ? 'col-span-2' : ''}>
+                            <img
+                              src={mediaUrl(m.storage_path)}
+                              alt={m.original_name || 'photo'}
+                              className="w-full rounded-lg border border-gray-100 object-cover"
+                              style={{ maxHeight: images.length === 1 ? '400px' : '200px' }}
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {others.map((m) => (
+                      <div key={m.id} className="mb-2">
+                        {m.media_type === 'video' && (
+                          <video src={mediaUrl(m.storage_path)} controls
+                            className="w-full rounded-lg border border-gray-100 max-h-64"
+                          />
+                        )}
+                        {m.media_type === 'audio' && (
+                          <div className="p-3 bg-gray-50 rounded-lg">
+                            <audio controls src={mediaUrl(m.storage_path)} className="w-full" />
+                            {m.transcription && (
+                              <p className="text-xs text-gray-500 mt-1">{m.transcription}</p>
+                            )}
+                          </div>
                         )}
                       </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
+                    ))}
+                  </>
+                )
+              })()}
             </div>
           )}
 

@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { ObservationForm, type SelectedFile } from '@/components/observations/ObservationForm'
 import { useCreateObservation } from '@/lib/hooks/useObservations'
-import { uploadMedia } from '@/lib/api/observations'
+import { uploadMedia, enrichObservation } from '@/lib/api/observations'
 import type { ObservationCreate } from '@/types'
 
 export default function NewObservationPage() {
@@ -12,10 +12,14 @@ export default function NewObservationPage() {
 
   async function handleSubmit(data: ObservationCreate, files: SelectedFile[]) {
     const obs = await mutateAsync(data)
-    // Upload any attached files sequentially after observation is created
+
     for (const { file, mediaType } of files) {
       await uploadMedia(obs.id, file, mediaType)
     }
+
+    // Fire-and-forget enrichment — navigate immediately, analysis arrives in background
+    enrichObservation(obs.id).catch(() => {/* LLM may not be configured yet */})
+
     router.push(`/observations/${obs.id}`)
   }
 

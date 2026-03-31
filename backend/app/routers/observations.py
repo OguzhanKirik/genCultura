@@ -1,6 +1,7 @@
 import uuid
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -17,8 +18,22 @@ from app.schemas.observation import (
 from app.schemas.media import MediaAttachmentSchema
 from app.schemas.search import SearchResponse
 from app.services.embedding_service import embedding_service
+from app.services.llm_service import llm_service
 from app.services.search_service import search_service
 from app.services.storage_service import storage_service
+from app.config import get_settings
+
+settings = get_settings()
+
+_ENRICH_SYSTEM = """You are an expert agronomist and crop protection specialist for greenhouse operations.
+Analyze the observation from a field worker and respond with a concise assessment using this structure:
+
+**Diagnosis:** What is most likely happening and why.
+**Confidence:** High / Medium / Low — and why.
+**Immediate actions:** Specific steps to take right now.
+**Watch for:** Signs that would change the diagnosis.
+
+If photos are provided, describe what you see in them. Be practical and specific."""
 
 router = APIRouter()
 
@@ -187,6 +202,56 @@ async def similar_observations(
     _: User = Depends(get_current_user),
 ):
     return await search_service.find_similar(db, observation_id, limit=limit)
+
+
+@router.post("/{observation_id}/enrich", response_model=ObservationDetail)
+async def enrich_observation(
+    observation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run VLM analysis on an observation (text + any attached images) and save the result."""
+    stmt = (
+        select(Observation)
+        .where(Observation.id == observation_id, Observation.is_deleted.is_(False))
+        .options(selectinload(Observation.author), selectinload(Observation.media_attachments))
+    )
+    obs = (await db.execute(stmt)).scalar_one_or_none()
+    if obs is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Observation not found")
+
+    # Build user prompt from structured fields
+    parts = [f"Observation: {obs.body}"]
+    if obs.crop_type:    parts.append(f"Crop: {obs.crop_type}")
+    if obs.growth_stage: parts.append(f"Growth stage: {obs.growth_stage}")
+    if obs.category:     parts.append(f"Category: {obs.category}")
+    if obs.severity:     parts.append(f"Severity reported by worker: {obs.severity}/5")
+    if obs.temp_c:       parts.append(f"Temperature: {obs.temp_c}°C")
+    if obs.humidity_pct: parts.append(f"Humidity: {obs.humidity_pct}%")
+    user_text = "\n".join(parts)
+
+    # Collect image paths from local storage
+    image_paths = [
+        Path(settings.media_dir) / m.storage_path
+        for m in obs.media_attachments
+        if m.media_type == "image"
+    ]
+
+    try:
+        if image_paths:
+            enriched = await llm_service.complete_with_images(_ENRICH_SYSTEM, user_text, image_paths)
+        else:
+            enriched = await llm_service.complete(_ENRICH_SYSTEM, user_text)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"LLM unavailable — is the Colab notebook running? ({exc})",
+        )
+
+    obs.body_enriched = enriched
+    await db.commit()
+    await db.refresh(obs, ["author", "media_attachments"])
+    return ObservationDetail.model_validate(obs)
 
 
 @router.post(

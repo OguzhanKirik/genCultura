@@ -64,3 +64,8 @@ export async function uploadMedia(
 export async function deleteMedia(observationId: string, mediaId: string): Promise<void> {
   await apiClient.delete(`/observations/${observationId}/media/${mediaId}`)
 }
+
+export async function enrichObservation(observationId: string): Promise<ObservationDetail> {
+  const { data } = await apiClient.post(`/observations/${observationId}/enrich`)
+  return data
+}
